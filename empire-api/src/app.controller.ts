@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 import express from 'express';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -17,6 +18,13 @@ const __dirname = import.meta.dirname;
 const commands: CommandInterface = JSON.parse(
   fs.readFileSync(path.join(__dirname, 'data', 'commands.json')).toString(),
 );
+const CONNECTOR_ALLOWED_COMMANDS = new Set(Object.keys(commands));
+
+type ConnectorSocket =
+  | GgeEmpire4KingdomsSocket
+  | GgeEmpireSocket
+  | GgeLiveTemporaryServerSocket
+  | GgeEmpire4KingdomsTcp;
 
 export default function createApp(sockets: {
   [x: string]: GgeEmpire4KingdomsSocket | GgeEmpireSocket | GgeLiveTemporaryServerSocket | GgeEmpire4KingdomsTcp;
@@ -30,6 +38,88 @@ export default function createApp(sockets: {
     response.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept');
     next();
   });
+
+  const connectors = new Map<
+    string,
+    { socket: ConnectorSocket; allowedCommands: Set<string>; server: string; createdAt: Date }
+  >();
+
+  function buildSocketFromRequest(
+    server: string,
+    socketUrl: string,
+    username: string,
+    password: string,
+    serverType: string,
+    autoReconnect: boolean,
+  ): ConnectorSocket {
+    switch (serverType) {
+      case 'ep': {
+        return new GgeEmpireSocket('wss://' + socketUrl, server, username, password, autoReconnect);
+      }
+      case 'e4k': {
+        return new GgeEmpire4KingdomsTcp('tcp://' + socketUrl, server, username, password, autoReconnect);
+      }
+      case 'e4k-legacy': {
+        return new GgeEmpire4KingdomsSocket('ws://' + socketUrl, server, username, password, autoReconnect);
+      }
+      default: {
+        return new GgeLiveTemporaryServerSocket('wss://' + socketUrl, server, username, password, autoReconnect);
+      }
+    }
+  }
+
+  async function handleSocketCommand(
+    socket: ConnectorSocket | null,
+    server: string,
+    command: string,
+    headers: string,
+    response: express.Response,
+    allowedCommands?: Set<string>,
+  ): Promise<void> {
+    if (allowedCommands && !allowedCommands.has(command)) {
+      response.status(403).json({ error: 'Command not allowed for this connector', command });
+      return;
+    }
+    if (socket !== null && socket.connected.isSet) {
+      let responseHeaders = {};
+      try {
+        const headersInput = headers === 'null' ? '' : headers;
+        const messageHeaders = JSON.parse(`{${headersInput}}`);
+        socket.sendJsonCommand(command, messageHeaders);
+
+        if (command in commands) {
+          for (const [messageKey, responsePath] of Object.entries(commands[command])) {
+            if (messageKey in messageHeaders) {
+              HeadersUtilities.setNestedValue(responseHeaders, responsePath, messageHeaders[messageKey]);
+            }
+          }
+        } else {
+          responseHeaders = messageHeaders;
+        }
+        let targetCommand = command;
+        if (command === 'jca') {
+          targetCommand = 'jaa';
+        }
+        const jsonResponse = await socket.waitForJsonResponse(targetCommand, responseHeaders, 1000);
+        response.status(200).json({
+          server,
+          command: targetCommand,
+          return_code: jsonResponse.payload.status,
+          content: jsonResponse.payload.data,
+        });
+      } catch {
+        response.status(200).json({
+          error: 'Timeout',
+          server,
+          command,
+          response_headers: responseHeaders,
+          return_code: -1,
+        });
+      }
+    } else {
+      response.status(500).json({ error: 'Server not connected' });
+    }
+  }
 
   app.delete('/server/:server', async (request, response) => {
     try {
@@ -77,48 +167,15 @@ export default function createApp(sockets: {
         response.status(400).json({ error: 'Invalid socket URL' });
         return;
       }
-      let socketServer:
-        | GgeEmpire4KingdomsSocket
-        | GgeEmpireSocket
-        | GgeLiveTemporaryServerSocket
-        | GgeEmpire4KingdomsTcp;
-      let autoReconnectValue = autoReconnect ?? false;
-      switch (serverType) {
-        case 'ep': {
-          socketServer = new GgeEmpireSocket('wss://' + socket_url, server, username, password, autoReconnectValue);
-          break;
-        }
-        case 'e4k': {
-          socketServer = new GgeEmpire4KingdomsTcp(
-            'tcp://' + socket_url,
-            server,
-            username,
-            password,
-            autoReconnectValue,
-          );
-          break;
-        }
-        case 'e4k-legacy': {
-          socketServer = new GgeEmpire4KingdomsSocket(
-            'ws://' + socket_url,
-            server,
-            username,
-            password,
-            autoReconnectValue,
-          );
-          break;
-        }
-        default: {
-          socketServer = new GgeLiveTemporaryServerSocket(
-            'wss://' + socket_url,
-            server,
-            username,
-            password,
-            autoReconnectValue,
-          );
-          break;
-        }
-      }
+      const autoReconnectValue = autoReconnect ?? false;
+      const socketServer = buildSocketFromRequest(
+        server,
+        socket_url,
+        username,
+        password,
+        serverType,
+        autoReconnectValue,
+      );
       sockets[server] = socketServer;
       void socketServer.connectMethod();
       response.status(200).json({ message: 'Server added' });
@@ -127,53 +184,117 @@ export default function createApp(sockets: {
     }
   });
 
+  app.post('/connector', async (request, response) => {
+    try {
+      const { server, socket_url, password, username, serverType, autoReconnect, allowedCommands } = request.body as {
+        server: string;
+        socket_url: string;
+        password: string;
+        username: string;
+        serverType: string;
+        autoReconnect?: boolean;
+        allowedCommands?: string[];
+      };
+      if (!(server && socket_url && password && username)) {
+        response.status(400).json({ error: 'Missing parameters' });
+        return;
+      }
+      const regex = /^[\dA-Za-z-]+\.goodgamestudios\.com$/;
+      if (!regex.test(socket_url)) {
+        response.status(400).json({ error: 'Invalid socket URL' });
+        return;
+      }
+      const safeCommands = new Set<string>();
+      if (Array.isArray(allowedCommands)) {
+        for (const command of allowedCommands) {
+          if (CONNECTOR_ALLOWED_COMMANDS.has(command)) {
+            safeCommands.add(command);
+          }
+        }
+      }
+      if (safeCommands.size === 0) {
+        CONNECTOR_ALLOWED_COMMANDS.forEach((item) => safeCommands.add(item));
+      }
+      const connectorSocket = buildSocketFromRequest(
+        server,
+        socket_url,
+        username,
+        password,
+        serverType,
+        autoReconnect ?? false,
+      );
+      const connectorId = crypto.randomUUID();
+      connectors.set(connectorId, {
+        socket: connectorSocket,
+        allowedCommands: safeCommands,
+        server,
+        createdAt: new Date(),
+      });
+      void connectorSocket.connectMethod();
+      response.status(201).json({
+        connectorId,
+        server,
+        allowedCommands: [...safeCommands],
+        message: 'Connector registered with restricted command access',
+      });
+    } catch (error) {
+      response.status(500).json({ error: error.message });
+    }
+  });
+
+  app.get('/connector/:connectorId/status', async (request, response) => {
+    const session = connectors.get(request.params.connectorId);
+    if (!session) {
+      response.status(404).json({ error: 'Connector not found' });
+      return;
+    }
+    response.status(200).json({
+      connectorId: request.params.connectorId,
+      server: session.server,
+      connected: session.socket.connected.isSet,
+      allowedCommands: [...session.allowedCommands],
+      since: session.createdAt,
+    });
+  });
+
+  app.delete('/connector/:connectorId', async (request, response) => {
+    const session = connectors.get(request.params.connectorId);
+    if (!session) {
+      response.status(404).json({ error: 'Connector not found' });
+      return;
+    }
+    try {
+      session.socket.close();
+    } catch {}
+    connectors.delete(request.params.connectorId);
+    response.status(200).json({ message: 'Connector removed' });
+  });
+
+  app.get('/connector/:connectorId/:command/:headers', async (request, response) => {
+    const connector = connectors.get(request.params.connectorId);
+    if (!connector) {
+      response.status(404).json({ error: 'Connector not found' });
+      return;
+    }
+    await handleSocketCommand(
+      connector.socket,
+      connector.server,
+      request.params.command,
+      request.params.headers,
+      response,
+      connector.allowedCommands,
+    );
+  });
+
   app.get('/:server/:command/:headers', async (request, response) => {
     if (request.params.server in sockets) {
-      if (sockets[request.params.server] !== null && sockets[request.params.server].connected.isSet) {
-        let responseHeaders = {};
-        try {
-          if (request.params.headers === 'null') {
-            request.params.headers = '';
-          }
-          const messageHeaders = JSON.parse(`{${request.params.headers}}`);
-          sockets[request.params.server].sendJsonCommand(request.params.command, messageHeaders);
-
-          if (request.params.command in commands) {
-            for (const [messageKey, responsePath] of Object.entries(commands[request.params.command])) {
-              if (messageKey in messageHeaders) {
-                HeadersUtilities.setNestedValue(responseHeaders, responsePath, messageHeaders[messageKey]);
-              }
-            }
-          } else {
-            responseHeaders = messageHeaders;
-          }
-          // Transformations
-          if (request.params.command === 'jca') {
-            request.params.command = 'jaa';
-          }
-          const jsonResponse = await sockets[request.params.server].waitForJsonResponse(
-            request.params.command,
-            responseHeaders,
-            1000,
-          );
-          response.status(200).json({
-            server: request.params.server,
-            command: request.params.command,
-            return_code: jsonResponse.payload.status,
-            content: jsonResponse.payload.data,
-          });
-        } catch {
-          response.status(200).json({
-            error: 'Timeout',
-            server: request.params.server,
-            command: request.params.command,
-            response_headers: responseHeaders,
-            return_code: -1,
-          });
-        }
-      } else {
-        response.status(500).json({ error: 'Server not connected' });
-      }
+      await handleSocketCommand(
+        sockets[request.params.server],
+        request.params.server,
+        request.params.command,
+        request.params.headers,
+        response,
+      );
     } else {
       response.status(404).json({ error: 'Server not found' });
     }

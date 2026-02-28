@@ -45,6 +45,27 @@ docker-compose up --build
 - API Endpoints: Available at `http://localhost:3000/api/v1`
 - Grafana Dashboard: Access at `http://localhost:3001`
 
+### Contribute account connectors
+
+You can donate your own game account as a **restricted connector** so gge-tracker can fetch data faster without exposing your credentials:
+
+1. Start the `empire-api` service.
+2. Register your account with a limited command allowlist:
+
+```bash
+curl -X POST http://localhost:3000/connector \
+  -H "Content-Type: application/json" \
+  -d '{"server":"DE1","socket_url":"abc.goodgamestudios.com","username":"USER","password":"SECRET","serverType":"ep","allowedCommands":["hgh","gdi"]}'
+```
+
+The API returns a `connectorId` that can be used to call only the allowed commands:
+
+```bash
+curl "http://localhost:3000/connector/<connectorId>/hgh/\"LT\":6,\"LID\":1,\"SV\":\"1\""
+```
+
+The connector token hides your credentials and limits accessible commands to avoid sensitive actions.
+
 ## Contributing
 
 Contributions are welcome!
