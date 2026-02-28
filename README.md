@@ -61,7 +61,8 @@ curl -X POST http://localhost:3000/connector \
 The API returns a `connectorId` that can be used to call only the allowed commands:
 
 ```bash
-curl 'http://localhost:3000/connector/<connectorId>/hgh/"LT":6,"LID":1,"SV":"1"'
+curl 'http://localhost:3000/connector/<connectorId>/hgh/%22LT%22:6,%22LID%22:1,%22SV%22:%221%22'
+# Note: URL-encode the headers segment when you build the path.
 ```
 
 Connector sessions expire automatically after 6 hours; register again if you need to refresh access.
