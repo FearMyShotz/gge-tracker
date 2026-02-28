@@ -43,6 +43,28 @@ export default function createApp(sockets: {
     string,
     { socket: ConnectorSocket; allowedCommands: Set<string>; server: string; createdAt: Date }
   >();
+  const CONNECTOR_MAX_AGE_MS = 1000 * 60 * 60 * 6;
+
+  function getConnectorSession(connectorId: string): {
+    socket: ConnectorSocket;
+    allowedCommands: Set<string>;
+    server: string;
+    createdAt: Date;
+  } | null {
+    const session = connectors.get(connectorId);
+    if (!session) return null;
+    const isExpired = Date.now() - session.createdAt.getTime() > CONNECTOR_MAX_AGE_MS;
+    if (isExpired) {
+      try {
+        session.socket.close();
+      } catch (error) {
+        console.warn(`Connector ${connectorId} cleanup failed:`, error);
+      }
+      connectors.delete(connectorId);
+      return null;
+    }
+    return session;
+  }
 
   function buildSocketFromRequest(
     server: string,
@@ -238,14 +260,15 @@ export default function createApp(sockets: {
         message: 'Connector registered with restricted command access',
       });
     } catch (error) {
-      response.status(500).json({ error: error.message });
+      console.error('Failed to register connector', error);
+      response.status(500).json({ error: 'Failed to register connector' });
     }
   });
 
   app.get('/connector/:connectorId/status', async (request, response) => {
-    const session = connectors.get(request.params.connectorId);
+    const session = getConnectorSession(request.params.connectorId);
     if (!session) {
-      response.status(404).json({ error: 'Connector not found' });
+      response.status(404).json({ error: 'Connector not found or expired' });
       return;
     }
     response.status(200).json({
@@ -265,15 +288,17 @@ export default function createApp(sockets: {
     }
     try {
       session.socket.close();
-    } catch {}
+    } catch (error) {
+      console.warn(`Failed to close connector ${request.params.connectorId}:`, error);
+    }
     connectors.delete(request.params.connectorId);
     response.status(200).json({ message: 'Connector removed' });
   });
 
   app.get('/connector/:connectorId/:command/:headers', async (request, response) => {
-    const connector = connectors.get(request.params.connectorId);
+    const connector = getConnectorSession(request.params.connectorId);
     if (!connector) {
-      response.status(404).json({ error: 'Connector not found' });
+      response.status(404).json({ error: 'Connector not found or expired' });
       return;
     }
     await handleSocketCommand(

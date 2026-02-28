@@ -61,9 +61,10 @@ curl -X POST http://localhost:3000/connector \
 The API returns a `connectorId` that can be used to call only the allowed commands:
 
 ```bash
-curl "http://localhost:3000/connector/<connectorId>/hgh/\"LT\":6,\"LID\":1,\"SV\":\"1\""
+curl 'http://localhost:3000/connector/<connectorId>/hgh/"LT":6,"LID":1,"SV":"1"'
 ```
 
+Connector sessions expire automatically after several hours; register again if you need to refresh access.
 The connector token hides your credentials and limits accessible commands to avoid sensitive actions.
 
 ## Contributing
