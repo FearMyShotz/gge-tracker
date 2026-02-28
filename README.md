@@ -69,7 +69,7 @@ curl 'http://localhost:3000/connector/<connectorId>/hgh/%22LT%22:6,%22LID%22:1,%
 ```
 
 Connector sessions expire automatically after 6 hours; register again if you need to refresh access.
-The connector token hides your credentials and limits accessible commands to avoid sensitive actions.
+The connectorId hides your credentials and limits accessible commands to avoid sensitive actions.
 
 ## Contributing
 

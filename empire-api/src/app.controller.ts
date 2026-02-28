@@ -108,6 +108,7 @@ export default function createApp(sockets: {
       let responseHeaders = {};
       try {
         // Legacy clients send the literal string "null" in the URL segment to indicate no headers payload.
+        // Replace it with an empty string so the parsed headers object defaults to {}.
         const headersInput = headers === 'null' ? '' : headers;
         const messageHeaders = JSON.parse(`{${headersInput}}`);
         socket.sendJsonCommand(command, messageHeaders);
@@ -233,15 +234,15 @@ export default function createApp(sockets: {
         response.status(400).json({ error: 'Invalid socket URL' });
         return;
       }
-      const safeCommands = new Set<string>();
+      const validatedCommands = new Set<string>();
       if (Array.isArray(allowedCommands)) {
         for (const command of allowedCommands) {
           if (CONNECTOR_ALLOWED_COMMANDS.has(command)) {
-            safeCommands.add(command);
+            validatedCommands.add(command);
           }
         }
       }
-      if (safeCommands.size === 0) {
+      if (validatedCommands.size === 0) {
         response.status(400).json({
           error: 'At least one allowed command must be provided',
           allowedCommands: [...CONNECTOR_ALLOWED_COMMANDS],
@@ -259,7 +260,7 @@ export default function createApp(sockets: {
       const connectorId = crypto.randomUUID();
       connectors.set(connectorId, {
         socket: connectorSocket,
-        allowedCommands: safeCommands,
+        allowedCommands: validatedCommands,
         server,
         createdAt: new Date(),
       });
@@ -267,7 +268,7 @@ export default function createApp(sockets: {
       response.status(201).json({
         connectorId,
         server,
-        allowedCommands: [...safeCommands],
+        allowedCommands: [...validatedCommands],
         message: 'Connector registered with restricted command access',
       });
     } catch (error) {
