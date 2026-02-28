@@ -45,7 +45,7 @@ export default function createApp(sockets: {
   >();
   // Limit connector lifetime to six hours to avoid long-lived tokens with stale credentials.
   const CONNECTOR_MAX_AGE_MS = 6 * 60 * 60 * 1000;
-  const SOCKET_COMMAND_TIMEOUT_MS = 1000;
+  const SOCKET_COMMAND_TIMEOUT_MILLISECONDS = 1000;
 
   function getConnectorSession(connectorId: string): {
     socket: ConnectorSocket;
@@ -129,7 +129,7 @@ export default function createApp(sockets: {
         const jsonResponse = await socket.waitForJsonResponse(
           targetCommand,
           responseHeaders,
-          SOCKET_COMMAND_TIMEOUT_MS,
+          SOCKET_COMMAND_TIMEOUT_MILLISECONDS,
         );
         response.status(200).json({
           server,
@@ -257,7 +257,10 @@ export default function createApp(sockets: {
         serverType,
         autoReconnect ?? false,
       );
-      const connectorId = crypto.randomUUID();
+      let connectorId = crypto.randomUUID();
+      while (connectors.has(connectorId)) {
+        connectorId = crypto.randomUUID();
+      }
       connectors.set(connectorId, {
         socket: connectorSocket,
         allowedCommands: validatedCommands,

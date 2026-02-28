@@ -58,7 +58,15 @@ curl -X POST http://localhost:3000/connector \
   -d '{"server":"DE1","socket_url":"abc.goodgamestudios.com","username":"USER","password":"SECRET","serverType":"ep","allowedCommands":["hgh","gdi"]}'
 ```
 
-💡 Security tip: pass `username` and `password` via environment variables or a file to avoid storing secrets in shell history.
+💡 Security tip: pass `username` and `password` via environment variables or a file to avoid storing secrets in shell history, e.g.:
+
+```bash
+export CONNECTOR_USER="USER"
+export CONNECTOR_PASS="SECRET"
+curl -X POST http://localhost:3000/connector \
+  -H "Content-Type: application/json" \
+  -d "{\"server\":\"DE1\",\"socket_url\":\"abc.goodgamestudios.com\",\"username\":\"${CONNECTOR_USER}\",\"password\":\"${CONNECTOR_PASS}\",\"serverType\":\"ep\",\"allowedCommands\":[\"hgh\",\"gdi\"]}"
+```
 
 The API returns a `connectorId` that can be used to call only the allowed commands.
 
