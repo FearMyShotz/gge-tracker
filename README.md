@@ -60,9 +60,9 @@ curl -X POST http://localhost:3000/connector \
 
 💡 Security tip: pass `username` and `password` via environment variables or a file to avoid storing secrets in shell history.
 
-The API returns a `connectorId` that can be used to call only the allowed commands:
+The API returns a `connectorId` that can be used to call only the allowed commands.
 
-Make sure the headers segment is URL-encoded when building the path (the example below is already encoded):
+Make sure the headers segment is URL-encoded when building the path. For example, `"LT":6,"LID":1,"SV":"1"` becomes `%22LT%22:6,%22LID%22:1,%22SV%22:%221%22`:
 
 ```bash
 curl 'http://localhost:3000/connector/<connectorId>/hgh/%22LT%22:6,%22LID%22:1,%22SV%22:%221%22'

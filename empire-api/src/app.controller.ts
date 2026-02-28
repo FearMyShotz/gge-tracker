@@ -45,7 +45,7 @@ export default function createApp(sockets: {
   >();
   // Limit connector lifetime to six hours to avoid long-lived tokens with stale credentials.
   const CONNECTOR_MAX_AGE_MS = 6 * 60 * 60 * 1000;
-  const SOCKET_RESPONSE_TIMEOUT_MS = 1000;
+  const SOCKET_COMMAND_TIMEOUT_MS = 1000;
 
   function getConnectorSession(connectorId: string): {
     socket: ConnectorSocket;
@@ -107,6 +107,7 @@ export default function createApp(sockets: {
     if (socket !== null && socket.connected.isSet) {
       let responseHeaders = {};
       try {
+        // Legacy clients send the literal string "null" in the URL segment to indicate no headers payload.
         const headersInput = headers === 'null' ? '' : headers;
         const messageHeaders = JSON.parse(`{${headersInput}}`);
         socket.sendJsonCommand(command, messageHeaders);
@@ -127,7 +128,7 @@ export default function createApp(sockets: {
         const jsonResponse = await socket.waitForJsonResponse(
           targetCommand,
           responseHeaders,
-          SOCKET_RESPONSE_TIMEOUT_MS,
+          SOCKET_COMMAND_TIMEOUT_MS,
         );
         response.status(200).json({
           server,
