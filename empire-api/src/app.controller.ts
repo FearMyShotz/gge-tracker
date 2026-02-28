@@ -43,6 +43,7 @@ export default function createApp(sockets: {
     string,
     { socket: ConnectorSocket; allowedCommands: Set<string>; server: string; createdAt: Date }
   >();
+  // Limit connector lifetime to six hours to avoid long-lived tokens with stale credentials.
   const CONNECTOR_MAX_AGE_MS = 1000 * 60 * 60 * 6;
 
   function getConnectorSession(connectorId: string): {
@@ -235,7 +236,11 @@ export default function createApp(sockets: {
         }
       }
       if (safeCommands.size === 0) {
-        CONNECTOR_ALLOWED_COMMANDS.forEach((item) => safeCommands.add(item));
+        response.status(400).json({
+          error: 'At least one allowed command must be provided',
+          allowedCommands: [...CONNECTOR_ALLOWED_COMMANDS],
+        });
+        return;
       }
       const connectorSocket = buildSocketFromRequest(
         server,
