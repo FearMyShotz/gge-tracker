@@ -60,7 +60,7 @@ export default function createApp(sockets: {
       try {
         session.socket.close();
       } catch (error) {
-        console.warn(`Connector ${connectorId} cleanup failed:`, error);
+        console.warn(`Failed to close socket during cleanup for connector ${connectorId}:`, error);
       }
       connectors.delete(connectorId);
       return null;

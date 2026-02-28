@@ -58,11 +58,14 @@ curl -X POST http://localhost:3000/connector \
   -d '{"server":"DE1","socket_url":"abc.goodgamestudios.com","username":"USER","password":"SECRET","serverType":"ep","allowedCommands":["hgh","gdi"]}'
 ```
 
+💡 Security tip: pass `username` and `password` via environment variables or a file to avoid storing secrets in shell history.
+
 The API returns a `connectorId` that can be used to call only the allowed commands:
+
+Make sure the headers segment is URL-encoded when building the path (the example below is already encoded):
 
 ```bash
 curl 'http://localhost:3000/connector/<connectorId>/hgh/%22LT%22:6,%22LID%22:1,%22SV%22:%221%22'
-# Note: URL-encode the headers segment when you build the path.
 ```
 
 Connector sessions expire automatically after 6 hours; register again if you need to refresh access.
