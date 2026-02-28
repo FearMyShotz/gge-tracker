@@ -26,6 +26,15 @@ type ConnectorSocket =
   | GgeLiveTemporaryServerSocket
   | GgeEmpire4KingdomsTcp;
 
+interface ConnectorSession {
+  socket: ConnectorSocket;
+  allowedCommands: Set<string>;
+  server: string;
+  createdAt: Date;
+  expiresAt: Date;
+  removalKey: string;
+}
+
 export default function createApp(sockets: {
   [x: string]: GgeEmpire4KingdomsSocket | GgeEmpireSocket | GgeLiveTemporaryServerSocket | GgeEmpire4KingdomsTcp;
 }): express.Express {
@@ -39,32 +48,57 @@ export default function createApp(sockets: {
     next();
   });
 
-  const connectors = new Map<
-    string,
-    { socket: ConnectorSocket; allowedCommands: Set<string>; server: string; createdAt: Date }
-  >();
+  const connectors = new Map<string, ConnectorSession>();
+  const connectorsByServer = new Map<string, string[]>();
+  const connectorRotation = new Map<string, number>();
   // Limit connector lifetime to six hours to avoid long-lived tokens with stale credentials.
   const CONNECTOR_MAX_AGE_MS = 6 * 60 * 60 * 1000;
   const CONNECTOR_CLEANUP_INTERVAL_MS = 10 * 60 * 1000;
   const MAX_ACTIVE_CONNECTORS = 50;
   const SOCKET_COMMAND_TIMEOUT_MILLISECONDS = 1000;
 
-  function getConnectorSession(connectorId: string): {
-    socket: ConnectorSocket;
-    allowedCommands: Set<string>;
-    server: string;
-    createdAt: Date;
-  } | null {
+  function addConnectorToServerIndex(server: string, connectorId: string): void {
+    const pool = connectorsByServer.get(server) ?? [];
+    pool.push(connectorId);
+    connectorsByServer.set(server, pool);
+    if (!connectorRotation.has(server)) {
+      connectorRotation.set(server, 0);
+    }
+  }
+
+  function removeConnectorFromServerIndex(server: string, connectorId: string): void {
+    const pool = connectorsByServer.get(server);
+    if (!pool) return;
+    const filtered = pool.filter((id) => id !== connectorId);
+    if (filtered.length === 0) {
+      connectorsByServer.delete(server);
+      connectorRotation.delete(server);
+    } else {
+      connectorsByServer.set(server, filtered);
+      const rotation = connectorRotation.get(server) ?? 0;
+      connectorRotation.set(server, rotation % filtered.length);
+    }
+  }
+
+  function deleteConnector(connectorId: string): ConnectorSession | null {
     const session = connectors.get(connectorId);
     if (!session) return null;
-    const isExpired = Date.now() - session.createdAt.getTime() > CONNECTOR_MAX_AGE_MS;
+    try {
+      session.socket.close();
+    } catch (error) {
+      console.warn(`Failed to close socket during cleanup for connector ${connectorId}:`, error);
+    }
+    connectors.delete(connectorId);
+    removeConnectorFromServerIndex(session.server, connectorId);
+    return session;
+  }
+
+  function getConnectorSession(connectorId: string): ConnectorSession | null {
+    const session = connectors.get(connectorId);
+    if (!session) return null;
+    const isExpired = Date.now() > session.expiresAt.getTime();
     if (isExpired) {
-      try {
-        session.socket.close();
-      } catch (error) {
-        console.warn(`Failed to close socket during cleanup for connector ${connectorId}:`, error);
-      }
-      connectors.delete(connectorId);
+      deleteConnector(connectorId);
       return null;
     }
     return session;
@@ -72,14 +106,9 @@ export default function createApp(sockets: {
 
   function cleanupExpiredConnectors(): void {
     for (const [id, session] of connectors) {
-      const expired = Date.now() - session.createdAt.getTime() > CONNECTOR_MAX_AGE_MS;
+      const expired = Date.now() > session.expiresAt.getTime();
       if (expired) {
-        try {
-          session.socket.close();
-        } catch (error) {
-          console.warn(`Failed to close socket during scheduled cleanup for connector ${id}:`, error);
-        }
-        connectors.delete(id);
+        deleteConnector(id);
       }
     }
   }
@@ -89,6 +118,46 @@ export default function createApp(sockets: {
   process.once('exit', () => clearInterval(cleanupInterval));
   process.once('SIGINT', () => clearInterval(cleanupInterval));
   process.once('SIGTERM', () => clearInterval(cleanupInterval));
+
+  function getActiveConnectorsForServer(
+    server: string,
+    command: string,
+  ): Array<{ id: string; session: ConnectorSession }> {
+    const pool = connectorsByServer.get(server);
+    if (!pool) return [];
+    const validSessions: Array<{ id: string; session: ConnectorSession }> = [];
+    for (const connectorId of pool) {
+      const session = getConnectorSession(connectorId);
+      if (session) {
+        validSessions.push({ id: connectorId, session });
+      }
+    }
+    if (pool.length !== validSessions.length) {
+      connectorsByServer.set(
+        server,
+        validSessions.map((entry) => entry.id),
+      );
+      if (validSessions.length === 0) {
+        connectorsByServer.delete(server);
+        connectorRotation.delete(server);
+      } else {
+        const rotation = connectorRotation.get(server) ?? 0;
+        connectorRotation.set(server, rotation % validSessions.length);
+      }
+    }
+    return validSessions.filter((entry) => entry.session.allowedCommands.has(command));
+  }
+
+  function getBalancedConnector(server: string, command: string): ConnectorSession | null {
+    const candidates = getActiveConnectorsForServer(server, command);
+    if (candidates.length === 0) {
+      return null;
+    }
+    const nextIndex = connectorRotation.get(server) ?? 0;
+    const chosen = candidates[nextIndex % candidates.length];
+    connectorRotation.set(server, (nextIndex + 1) % candidates.length);
+    return chosen.session;
+  }
 
   function buildSocketFromRequest(
     server: string,
@@ -112,6 +181,86 @@ export default function createApp(sockets: {
         return new GgeLiveTemporaryServerSocket('wss://' + socketUrl, server, username, password, autoReconnect);
       }
     }
+  }
+
+  function registerConnector({
+    server,
+    socket_url,
+    password,
+    username,
+    serverType,
+    autoReconnect,
+    allowedCommands,
+  }: {
+    server: string;
+    socket_url: string;
+    password: string;
+    username: string;
+    serverType: string;
+    autoReconnect?: boolean;
+    allowedCommands?: string[];
+  }): { status: number; body: Record<string, unknown> } {
+    if (!(server && socket_url && password && username)) {
+      return { status: 400, body: { error: 'Missing parameters' } };
+    }
+    cleanupExpiredConnectors();
+    if (connectors.size >= MAX_ACTIVE_CONNECTORS) {
+      return { status: 429, body: { error: 'Connector limit reached, try again later' } };
+    }
+    const regex = /^[\dA-Za-z-]+\.goodgamestudios\.com$/;
+    if (!regex.test(socket_url)) {
+      return { status: 400, body: { error: 'Invalid socket URL' } };
+    }
+    const validatedCommands = new Set<string>();
+    if (Array.isArray(allowedCommands)) {
+      for (const command of allowedCommands) {
+        if (CONNECTOR_ALLOWED_COMMANDS.has(command)) {
+          validatedCommands.add(command);
+        }
+      }
+    }
+    if (validatedCommands.size === 0) {
+      return {
+        status: 400,
+        body: {
+          error: 'At least one allowed command must be provided',
+          allowedCommands: [...CONNECTOR_ALLOWED_COMMANDS],
+        },
+      };
+    }
+    const connectorSocket = buildSocketFromRequest(
+      server,
+      socket_url,
+      username,
+      password,
+      serverType,
+      autoReconnect ?? false,
+    );
+    const connectorId = crypto.randomUUID();
+    const removalKey = crypto.randomUUID();
+    const createdAt = new Date();
+    const expiresAt = new Date(createdAt.getTime() + CONNECTOR_MAX_AGE_MS);
+    connectors.set(connectorId, {
+      socket: connectorSocket,
+      allowedCommands: validatedCommands,
+      server,
+      createdAt,
+      expiresAt,
+      removalKey,
+    });
+    addConnectorToServerIndex(server, connectorId);
+    void connectorSocket.connectMethod();
+    return {
+      status: 201,
+      body: {
+        connectorId,
+        removalKey,
+        server,
+        allowedCommands: [...validatedCommands],
+        expiresAt,
+        message: 'Connector registered with restricted command access',
+      },
+    };
   }
 
   async function handleSocketCommand(
@@ -247,69 +396,33 @@ export default function createApp(sockets: {
 
   app.post('/connector', async (request, response) => {
     try {
-      const { server, socket_url, password, username, serverType, autoReconnect, allowedCommands } = request.body as {
-        server: string;
-        socket_url: string;
-        password: string;
-        username: string;
-        serverType: string;
-        autoReconnect?: boolean;
-        allowedCommands?: string[];
-      };
-      if (!(server && socket_url && password && username)) {
-        response.status(400).json({ error: 'Missing parameters' });
-        return;
-      }
-      cleanupExpiredConnectors();
-      if (connectors.size >= MAX_ACTIVE_CONNECTORS) {
-        response.status(429).json({ error: 'Connector limit reached, try again later' });
-        return;
-      }
-      const regex = /^[\dA-Za-z-]+\.goodgamestudios\.com$/;
-      if (!regex.test(socket_url)) {
-        response.status(400).json({ error: 'Invalid socket URL' });
-        return;
-      }
-      const validatedCommands = new Set<string>();
-      if (Array.isArray(allowedCommands)) {
-        for (const command of allowedCommands) {
-          if (CONNECTOR_ALLOWED_COMMANDS.has(command)) {
-            validatedCommands.add(command);
-          }
-        }
-      }
-      if (validatedCommands.size === 0) {
-        response.status(400).json({
-          error: 'At least one allowed command must be provided',
-          allowedCommands: [...CONNECTOR_ALLOWED_COMMANDS],
-        });
-        return;
-      }
-      const connectorSocket = buildSocketFromRequest(
-        server,
-        socket_url,
-        username,
-        password,
-        serverType,
-        autoReconnect ?? false,
-      );
-      const connectorId = crypto.randomUUID();
-      connectors.set(connectorId, {
-        socket: connectorSocket,
-        allowedCommands: validatedCommands,
-        server,
-        createdAt: new Date(),
-      });
-      void connectorSocket.connectMethod();
-      response.status(201).json({
-        connectorId,
-        server,
-        allowedCommands: [...validatedCommands],
-        message: 'Connector registered with restricted command access',
-      });
+      const result = registerConnector(request.body);
+      response.status(result.status).json(result.body);
     } catch (error) {
       console.error('Failed to register connector', error);
       response.status(500).json({ error: 'Failed to register connector' });
+    }
+  });
+
+  app.post('/connector/bulk', async (request, response) => {
+    try {
+      const payload = Array.isArray(request.body) ? request.body : request.body?.connectors;
+      if (!Array.isArray(payload) || payload.length === 0) {
+        response.status(400).json({ error: 'Provide an array of connector definitions' });
+        return;
+      }
+      const results: Array<{ status: number; body: Record<string, unknown> }> = [];
+      for (const entry of payload) {
+        const result = registerConnector(entry as Record<string, string>);
+        results.push(result);
+      }
+      const hasSuccess = results.some((result) => result.status >= 200 && result.status < 300);
+      const hasFailure = results.some((result) => result.status >= 400);
+      const status = hasSuccess && hasFailure ? 207 : hasFailure ? 400 : 201;
+      response.status(status).json({ results });
+    } catch (error) {
+      console.error('Failed to register connectors', error);
+      response.status(500).json({ error: 'Failed to register connectors' });
     }
   });
 
@@ -325,21 +438,48 @@ export default function createApp(sockets: {
       connected: session.socket.connected.isSet,
       allowedCommands: [...session.allowedCommands],
       since: session.createdAt,
+      expiresAt: session.expiresAt,
     });
   });
 
-  app.delete('/connector/:connectorId', async (request, response) => {
-    const session = connectors.get(request.params.connectorId);
-    if (!session) {
-      response.status(404).json({ error: 'Connector not found' });
+  app.post('/connector/:connectorId/renew', async (request, response) => {
+    const removalKey =
+      (request.body?.removalKey as string | undefined) ?? (request.query?.removalKey as string | undefined);
+    if (!removalKey) {
+      response.status(400).json({ error: 'Removal key is required' });
       return;
     }
-    try {
-      session.socket.close();
-    } catch (error) {
-      console.warn(`Failed to close connector ${request.params.connectorId}:`, error);
+    const session = getConnectorSession(request.params.connectorId);
+    if (!session) {
+      response.status(404).json({ error: 'Connector not found or expired' });
+      return;
     }
-    connectors.delete(request.params.connectorId);
+    if (session.removalKey !== removalKey) {
+      response.status(403).json({ error: 'Invalid removal key' });
+      return;
+    }
+    const renewedExpiry = new Date(Date.now() + CONNECTOR_MAX_AGE_MS);
+    session.expiresAt = renewedExpiry;
+    response.status(200).json({ message: 'Connector renewed', expiresAt: renewedExpiry });
+  });
+
+  app.delete('/connector/:connectorId', async (request, response) => {
+    const removalKey =
+      (request.body?.removalKey as string | undefined) ?? (request.query?.removalKey as string | undefined);
+    if (!removalKey) {
+      response.status(400).json({ error: 'Removal key is required' });
+      return;
+    }
+    const session = getConnectorSession(request.params.connectorId);
+    if (!session) {
+      response.status(404).json({ error: 'Connector not found or expired' });
+      return;
+    }
+    if (session.removalKey !== removalKey) {
+      response.status(403).json({ error: 'Invalid removal key' });
+      return;
+    }
+    deleteConnector(request.params.connectorId);
     response.status(200).json({ message: 'Connector removed' });
   });
 
@@ -360,14 +500,21 @@ export default function createApp(sockets: {
   });
 
   app.get('/:server/:command/:headers', async (request, response) => {
-    if (Object.prototype.hasOwnProperty.call(sockets, request.params.server)) {
+    const { server, command, headers } = request.params as { server: string; command: string; headers: string };
+    const connector = getBalancedConnector(server, command);
+    if (connector) {
       await handleSocketCommand(
-        sockets[request.params.server],
-        request.params.server,
-        request.params.command,
-        request.params.headers,
+        connector.socket,
+        connector.server,
+        command,
+        headers,
         response,
+        connector.allowedCommands,
       );
+      return;
+    }
+    if (Object.prototype.hasOwnProperty.call(sockets, server)) {
+      await handleSocketCommand(sockets[server], server, command, headers, response);
     } else {
       response.status(404).json({ error: 'Server not found' });
     }

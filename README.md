@@ -69,7 +69,15 @@ curl -X POST http://localhost:3000/connector \
   -d "{\"server\":\"DE1\",\"socket_url\":\"abc.goodgamestudios.com\",\"username\":\"${CONNECTOR_USER}\",\"password\":\"${CONNECTOR_PASS}\",\"serverType\":\"ep\",\"allowedCommands\":[\"hgh\",\"gdi\"]}"
 ```
 
-The API returns a `connectorId` that can be used to call only the allowed commands.
+The API returns a `connectorId` (for requests) and `removalKey` (for renew/delete).
+
+Register multiple accounts at once:
+
+```bash
+curl -X POST http://localhost:3000/connector/bulk \
+  -H "Content-Type: application/json" \
+  -d '{"connectors":[{"server":"DE1","socket_url":"abc.goodgamestudios.com","username":"USER1","password":"SECRET1","serverType":"ep","allowedCommands":["hgh"]},{"server":"DE1","socket_url":"abc.goodgamestudios.com","username":"USER2","password":"SECRET2","serverType":"ep","allowedCommands":["gdi"]}]}'
+```
 
 Make sure the headers segment is fully URL-encoded when building the path. For example, `"LT":6,"LID":1,"SV":"1"` becomes `%22LT%22%3A6%2C%22LID%22%3A1%2C%22SV%22%3A%221%22`:
 
@@ -77,7 +85,14 @@ Make sure the headers segment is fully URL-encoded when building the path. For e
 curl 'http://localhost:3000/connector/<connectorId>/hgh/%22LT%22%3A6%2C%22LID%22%3A1%2C%22SV%22%3A%221%22'
 ```
 
-Connector sessions expire automatically after 6 hours; register again if you need to refresh access.
+Remove or renew a connector without re-sending credentials:
+
+```bash
+curl -X DELETE "http://localhost:3000/connector/<connectorId>?removalKey=<removalKey>"
+curl -X POST "http://localhost:3000/connector/<connectorId>/renew?removalKey=<removalKey>"
+```
+
+Connector sessions expire automatically after 6 hours; use renew to extend them. When available, connectors are load-balanced and used by the internal backend by default to spread requests across donated accounts.
 The connectorId hides your credentials and limits accessible commands to avoid sensitive actions.
 
 ## Contributing
