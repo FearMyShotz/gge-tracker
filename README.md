@@ -70,10 +70,10 @@ curl -X POST http://localhost:3000/connector \
 
 The API returns a `connectorId` that can be used to call only the allowed commands.
 
-Make sure the headers segment is URL-encoded when building the path. For example, `"LT":6,"LID":1,"SV":"1"` becomes `%22LT%22:6,%22LID%22:1,%22SV%22:%221%22`:
+Make sure the headers segment is fully URL-encoded when building the path. For example, `"LT":6,"LID":1,"SV":"1"` becomes `%22LT%22%3A6%2C%22LID%22%3A1%2C%22SV%22%3A%221%22`:
 
 ```bash
-curl 'http://localhost:3000/connector/<connectorId>/hgh/%22LT%22:6,%22LID%22:1,%22SV%22:%221%22'
+curl 'http://localhost:3000/connector/<connectorId>/hgh/%22LT%22%3A6%2C%22LID%22%3A1%2C%22SV%22%3A%221%22'
 ```
 
 Connector sessions expire automatically after 6 hours; register again if you need to refresh access.

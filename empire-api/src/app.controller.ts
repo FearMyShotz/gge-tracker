@@ -257,10 +257,7 @@ export default function createApp(sockets: {
         serverType,
         autoReconnect ?? false,
       );
-      let connectorId = crypto.randomUUID();
-      while (connectors.has(connectorId)) {
-        connectorId = crypto.randomUUID();
-      }
+      const connectorId = crypto.randomUUID();
       connectors.set(connectorId, {
         socket: connectorSocket,
         allowedCommands: validatedCommands,
