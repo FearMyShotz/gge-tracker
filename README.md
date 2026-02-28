@@ -45,6 +45,56 @@ docker-compose up --build
 - API Endpoints: Available at `http://localhost:3000/api/v1`
 - Grafana Dashboard: Access at `http://localhost:3001`
 
+### Contribute account connectors
+
+You can donate your own game account as a **restricted connector** so gge-tracker can fetch data faster without exposing your credentials:
+
+1. Start the `empire-api` service.
+   - When using Docker Compose, `empire-api` is only reachable on the internal `backend` network (e.g., `http://empire-api:3000`). To call it from your host, expose a port in the compose file (e.g., `ports: ["3002:3000"]`) or run `npm start` locally and use `http://localhost:3000`.
+2. Register your account with a limited command allowlist:
+
+```bash
+curl -X POST http://localhost:3000/connector \
+  -H "Content-Type: application/json" \
+  -d '{"server":"DE1","socket_url":"abc.goodgamestudios.com","username":"USER","password":"SECRET","serverType":"ep","allowedCommands":["hgh","gdi"]}'
+```
+
+💡 Security tip: pass `username` and `password` via environment variables or a file to avoid storing secrets in shell history, e.g.:
+
+```bash
+export CONNECTOR_USER="USER"
+export CONNECTOR_PASS="SECRET"
+curl -X POST http://localhost:3000/connector \
+  -H "Content-Type: application/json" \
+  -d "{\"server\":\"DE1\",\"socket_url\":\"abc.goodgamestudios.com\",\"username\":\"${CONNECTOR_USER}\",\"password\":\"${CONNECTOR_PASS}\",\"serverType\":\"ep\",\"allowedCommands\":[\"hgh\",\"gdi\"]}"
+```
+
+The API returns a `connectorId` (for requests) and `removalKey` (for renew/delete).
+
+Register multiple accounts at once:
+
+```bash
+curl -X POST http://localhost:3000/connector/bulk \
+  -H "Content-Type: application/json" \
+  -d '{"connectors":[{"server":"DE1","socket_url":"abc.goodgamestudios.com","username":"USER1","password":"SECRET1","serverType":"ep","allowedCommands":["hgh"]},{"server":"DE1","socket_url":"abc.goodgamestudios.com","username":"USER2","password":"SECRET2","serverType":"ep","allowedCommands":["gdi"]}]}'
+```
+
+Make sure the headers segment is fully URL-encoded when building the path. For example, `"LT":6,"LID":1,"SV":"1"` becomes `%22LT%22%3A6%2C%22LID%22%3A1%2C%22SV%22%3A%221%22`:
+
+```bash
+curl 'http://localhost:3000/connector/<connectorId>/hgh/%22LT%22%3A6%2C%22LID%22%3A1%2C%22SV%22%3A%221%22'
+```
+
+Remove or renew a connector without re-sending credentials:
+
+```bash
+curl -X DELETE "http://localhost:3000/connector/<connectorId>?removalKey=<removalKey>"
+curl -X POST "http://localhost:3000/connector/<connectorId>/renew?removalKey=<removalKey>"
+```
+
+Connector sessions expire automatically after 6 hours; use renew to extend them. When available, connectors are load-balanced and used by the internal backend by default to spread requests across donated accounts.
+The connectorId hides your credentials and limits accessible commands to avoid sensitive actions.
+
 ## Contributing
 
 Contributions are welcome!
