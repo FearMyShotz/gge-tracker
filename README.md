@@ -50,6 +50,7 @@ docker-compose up --build
 You can donate your own game account as a **restricted connector** so gge-tracker can fetch data faster without exposing your credentials:
 
 1. Start the `empire-api` service.
+   - When using Docker Compose, `empire-api` is only reachable on the internal `backend` network (e.g., `http://empire-api:3000`). To call it from your host, expose a port in the compose file (e.g., `ports: ["3002:3000"]`) or run `npm start` locally and use `http://localhost:3000`.
 2. Register your account with a limited command allowlist:
 
 ```bash

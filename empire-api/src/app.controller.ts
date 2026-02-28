@@ -45,6 +45,8 @@ export default function createApp(sockets: {
   >();
   // Limit connector lifetime to six hours to avoid long-lived tokens with stale credentials.
   const CONNECTOR_MAX_AGE_MS = 6 * 60 * 60 * 1000;
+  const CONNECTOR_CLEANUP_INTERVAL_MS = 10 * 60 * 1000;
+  const MAX_ACTIVE_CONNECTORS = 50;
   const SOCKET_COMMAND_TIMEOUT_MILLISECONDS = 1000;
 
   function getConnectorSession(connectorId: string): {
@@ -67,6 +69,22 @@ export default function createApp(sockets: {
     }
     return session;
   }
+
+  function cleanupExpiredConnectors(): void {
+    for (const [id, session] of connectors) {
+      const expired = Date.now() - session.createdAt.getTime() > CONNECTOR_MAX_AGE_MS;
+      if (expired) {
+        try {
+          session.socket.close();
+        } catch (error) {
+          console.warn(`Failed to close socket during scheduled cleanup for connector ${id}:`, error);
+        }
+        connectors.delete(id);
+      }
+    }
+  }
+
+  setInterval(cleanupExpiredConnectors, CONNECTOR_CLEANUP_INTERVAL_MS).unref();
 
   function buildSocketFromRequest(
     server: string,
@@ -106,16 +124,22 @@ export default function createApp(sockets: {
     }
     if (socket !== null && socket.connected.isSet) {
       let responseHeaders = {};
+      let messageHeaders: Record<string, unknown> = {};
+      // Legacy clients send the literal string "null" in the URL segment to indicate no headers payload.
+      // Replace it with an empty string so the parsed headers object defaults to {}.
+      const headersInput = headers === 'null' ? '' : headers;
       try {
-        // Legacy clients send the literal string "null" in the URL segment to indicate no headers payload.
-        // Replace it with an empty string so the parsed headers object defaults to {}.
-        const headersInput = headers === 'null' ? '' : headers;
-        const messageHeaders = JSON.parse(`{${headersInput}}`);
+        messageHeaders = headersInput ? JSON.parse(`{${headersInput}}`) : {};
+      } catch {
+        response.status(400).json({ error: 'Invalid headers JSON' });
+        return;
+      }
+      try {
         socket.sendJsonCommand(command, messageHeaders);
 
-        if (command in commands) {
+        if (Object.prototype.hasOwnProperty.call(commands, command)) {
           for (const [messageKey, responsePath] of Object.entries(commands[command])) {
-            if (messageKey in messageHeaders) {
+            if (Object.prototype.hasOwnProperty.call(messageHeaders, messageKey)) {
               HeadersUtilities.setNestedValue(responseHeaders, responsePath, messageHeaders[messageKey]);
             }
           }
@@ -137,9 +161,10 @@ export default function createApp(sockets: {
           return_code: jsonResponse.payload.status,
           content: jsonResponse.payload.data,
         });
-      } catch {
-        response.status(200).json({
-          error: 'Timeout',
+      } catch (error) {
+        console.warn('Socket command failed', error);
+        response.status(504).json({
+          error: 'Timeout waiting for socket response',
           server,
           command,
           response_headers: responseHeaders,
@@ -158,7 +183,7 @@ export default function createApp(sockets: {
         response.status(400).json({ error: 'Missing parameters' });
         return;
       }
-      if (server in sockets) {
+      if (Object.prototype.hasOwnProperty.call(sockets, server)) {
         try {
           sockets[server].close();
         } catch {}
@@ -186,7 +211,7 @@ export default function createApp(sockets: {
         response.status(400).json({ error: 'Missing parameters' });
         return;
       }
-      if (server in sockets) {
+      if (Object.prototype.hasOwnProperty.call(sockets, server)) {
         try {
           sockets[server].close();
         } catch {}
@@ -227,6 +252,11 @@ export default function createApp(sockets: {
       };
       if (!(server && socket_url && password && username)) {
         response.status(400).json({ error: 'Missing parameters' });
+        return;
+      }
+      cleanupExpiredConnectors();
+      if (connectors.size >= MAX_ACTIVE_CONNECTORS) {
+        response.status(429).json({ error: 'Connector limit reached, try again later' });
         return;
       }
       const regex = /^[\dA-Za-z-]+\.goodgamestudios\.com$/;
@@ -324,7 +354,7 @@ export default function createApp(sockets: {
   });
 
   app.get('/:server/:command/:headers', async (request, response) => {
-    if (request.params.server in sockets) {
+    if (Object.prototype.hasOwnProperty.call(sockets, request.params.server)) {
       await handleSocketCommand(
         sockets[request.params.server],
         request.params.server,
