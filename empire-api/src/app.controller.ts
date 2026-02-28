@@ -48,11 +48,6 @@ export default function createApp(sockets: {
   const CONNECTOR_CLEANUP_INTERVAL_MS = 10 * 60 * 1000;
   const MAX_ACTIVE_CONNECTORS = 50;
   const SOCKET_COMMAND_TIMEOUT_MILLISECONDS = 1000;
-  const cleanupInterval = setInterval(cleanupExpiredConnectors, CONNECTOR_CLEANUP_INTERVAL_MS);
-  cleanupInterval.unref();
-  process.once('exit', () => clearInterval(cleanupInterval));
-  process.once('SIGINT', () => clearInterval(cleanupInterval));
-  process.once('SIGTERM', () => clearInterval(cleanupInterval));
 
   function getConnectorSession(connectorId: string): {
     socket: ConnectorSocket;
@@ -138,12 +133,8 @@ export default function createApp(sockets: {
       // Replace it with an empty string so the parsed headers object defaults to {}.
       const headersInput = headers === 'null' ? '' : headers;
       try {
-        const sanitizedHeaders = headersInput.trim();
-        if (sanitizedHeaders && !/^[\s\w"',.:-]+$/.test(sanitizedHeaders)) {
-          response.status(400).json({ error: 'Invalid characters in headers' });
-          return;
-        }
-        const payload = sanitizedHeaders ? `{${sanitizedHeaders}}` : '{}';
+        const trimmedHeaders = headersInput.trim();
+        const payload = trimmedHeaders ? `{${trimmedHeaders}}` : '{}';
         messageHeaders = JSON.parse(payload);
       } catch {
         response.status(400).json({ error: 'Invalid headers JSON' });
@@ -179,7 +170,7 @@ export default function createApp(sockets: {
       } catch (error) {
         console.warn('Socket command failed', error);
         response.status(504).json({
-          error: 'Timeout waiting for socket response',
+          error: `Timeout waiting for socket response for command ${command} after ${SOCKET_COMMAND_TIMEOUT_MILLISECONDS}ms`,
           server,
           command,
           response_headers: responseHeaders,
@@ -309,16 +300,6 @@ export default function createApp(sockets: {
         server,
         createdAt: new Date(),
       });
-      if (connectors.size > MAX_ACTIVE_CONNECTORS) {
-        try {
-          connectorSocket.close();
-        } catch (error) {
-          console.warn(`Failed to close connector ${connectorId} after limit check:`, error);
-        }
-        connectors.delete(connectorId);
-        response.status(429).json({ error: 'Connector limit reached, try again later' });
-        return;
-      }
       void connectorSocket.connectMethod();
       response.status(201).json({
         connectorId,
